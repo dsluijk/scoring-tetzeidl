@@ -5,6 +5,7 @@ use std::{
     env,
     error::Error,
     io,
+    sync::Mutex,
     time::{Duration, Instant},
 };
 
@@ -15,9 +16,9 @@ use crossterm::{
 };
 use tui::{
     backend::{Backend, CrosstermBackend},
-    layout::{Constraint, Layout},
+    layout::{Alignment, Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
-    widgets::{Block, Borders, Cell, Row, Table, TableState},
+    widgets::{Block, BorderType, Borders, Cell, Paragraph, Row, Table, TableState},
     Frame, Terminal,
 };
 
@@ -27,18 +28,15 @@ use team::Team;
 struct App {
     state: TableState,
     teams: Vec<Team>,
-    board: Board,
+    board: Option<Mutex<Board>>,
     active: u32,
     is_running: bool,
 }
 
 impl App {
-    fn new(mut board: Board) -> App {
+    fn new(board: Option<Mutex<Board>>) -> App {
         let mut state = TableState::default();
-        state.select(Some(0));
-
-        board.write(0, " TIJD ".to_string());
-        board.write(2, "TOPTIJD".to_string());
+        state.select(None);
 
         App {
             state,
@@ -73,35 +71,48 @@ impl App {
         }
     }
     pub fn next(&mut self) {
-        let i = match self.state.selected() {
-            Some(i) => {
-                if i >= self.teams.len() - 1 {
-                    0
-                } else {
-                    i + 1
-                }
-            }
+        if self.teams.is_empty() {
+            return;
+        }
+
+        let selected = match self.state.selected() {
+            Some(i) => i,
             None => 0,
         };
-        self.state.select(Some(i));
+
+        let new = if selected >= self.teams.len() - 1 {
+            0
+        } else {
+            selected + 1
+        };
+
+        self.state.select(Some(new));
     }
 
     pub fn previous(&mut self) {
-        let i = match self.state.selected() {
-            Some(i) => {
-                if i == 0 {
-                    self.teams.len() - 1
-                } else {
-                    i - 1
-                }
-            }
+        if self.teams.is_empty() {
+            return;
+        }
+
+        let selected = match self.state.selected() {
+            Some(i) => i,
             None => 0,
         };
-        self.state.select(Some(i));
+
+        let new = if selected <= 0 {
+            self.teams.len() - 1
+        } else {
+            selected - 1
+        };
+
+        self.state.select(Some(new));
     }
 
     fn start_stop_current(&mut self) {
-        let id = self.state.selected().unwrap();
+        let id = match self.state.selected() {
+            Some(i) => i,
+            None => return,
+        };
 
         if self.is_running {
             if self.active == self.teams[id].id {
@@ -113,7 +124,10 @@ impl App {
                     .get_time()
                     .replace(":", "");
                 if time.len() == 6 {
-                    self.board.write(1, format!(" {}", time));
+                    if let Some(board) = &self.board {
+                        let mut board = board.lock().unwrap();
+                        board.write(1, format!(" {}", time));
+                    }
                 }
 
                 self.teams[id].start_stop_timer();
@@ -127,7 +141,16 @@ impl App {
     }
 
     fn reset_current(&mut self) {
-        self.teams[self.state.selected().unwrap()].reset_time();
+        let selected = match self.state.selected() {
+            Some(i) => i,
+            None => return,
+        };
+
+        self.teams[selected].reset_time();
+    }
+
+    fn create_new(&mut self) {
+        println!("creating new");
     }
 
     fn on_tick(&mut self) {
@@ -136,7 +159,10 @@ impl App {
         if let Some(team) = self.teams.first() {
             let time = team.get_time().replace(":", "");
             if time.len() == 6 {
-                self.board.write(3, format!(" {}", time));
+                if let Some(board) = &self.board {
+                    let mut board = board.lock().unwrap();
+                    board.write(3, format!(" {}", time));
+                }
             }
         }
 
@@ -149,17 +175,32 @@ impl App {
                 .get_time()
                 .replace(":", "");
             if time.len() == 6 {
-                self.board.write(1, format!(" {}", time));
+                if let Some(board) = &self.board {
+                    let mut board = board.lock().unwrap();
+                    board.write(1, format!(" {}", time));
+                }
             }
         }
 
-        self.board.tick();
+        if let Some(board) = &self.board {
+            let mut board = board.lock().unwrap();
+            board.tick();
+        }
     }
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let port = env::args().nth(1).expect("Please provide a port!");
-    let board = Board::new(port);
+    let port = env::args().nth(1);
+    let board = if let Some(port) = port {
+        let mut board = Board::new(port);
+        board.write(0, " TIJD ".to_string());
+        board.write(2, "TOPTIJD".to_string());
+
+        Some(Mutex::new(board))
+    } else {
+        println!("WARN: Port not supplied, running headless.");
+        None
+    };
 
     // setup terminal
     enable_raw_mode()?;
@@ -207,6 +248,7 @@ fn run_app<B: Backend>(
             if let Event::Key(key) = event::read()? {
                 match key.code {
                     KeyCode::Char('q') => return Ok(()),
+                    KeyCode::Char('n') => app.create_new(),
                     KeyCode::Char('c') => app.reset_current(),
                     KeyCode::Enter => app.start_stop_current(),
                     KeyCode::Down => app.next(),
@@ -224,10 +266,25 @@ fn run_app<B: Backend>(
 }
 
 fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
-    let rects = Layout::default()
-        .constraints([Constraint::Percentage(100)].as_ref())
-        .margin(1)
-        .split(f.size());
+    let size = f.size();
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(2)
+        .constraints([Constraint::Min(2), Constraint::Length(3)].as_ref())
+        .split(size);
+
+    let help =
+        Paragraph::new("q: Exit | n: Nieuwe Deelnemer | Space: Start/Stop tijd | c: Reset Tijd")
+            .style(Style::default().fg(Color::LightCyan))
+            .alignment(Alignment::Center)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .style(Style::default().fg(Color::White))
+                    .title("Help")
+                    .border_type(BorderType::Plain),
+            );
+    f.render_widget(help, chunks[1]);
 
     let selected_style = Style::default().add_modifier(Modifier::REVERSED);
     let header_cells = ["Group Nummer", "Team Captain", "Starttijd", "Racetijd"]
@@ -249,5 +306,5 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
             Constraint::Min(20),
         ]);
 
-    f.render_stateful_widget(t, rects[0], &mut app.state);
+    f.render_stateful_widget(t, chunks[0], &mut app.state);
 }
