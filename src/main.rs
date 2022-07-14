@@ -25,12 +25,20 @@ use tui::{
 use board::Board;
 use team::Team;
 
+enum InputMode {
+    Normal,
+    Editing,
+}
+
 struct App {
     state: TableState,
     teams: Vec<Team>,
     board: Option<Mutex<Board>>,
     active: u32,
     is_running: bool,
+    input_mode: InputMode,
+    input: String,
+    last_id: u32,
 }
 
 impl App {
@@ -43,31 +51,10 @@ impl App {
             board,
             active: 0,
             is_running: false,
-            teams: vec![
-                Team::new(1, String::from("Merlijn Hunik"), String::from("13:00")),
-                Team::new(2, String::from("Jesper Klomp"), String::from("13:15")),
-                Team::new(3, String::from("Kjell Albers"), String::from("13:30")),
-                Team::new(4, String::from("Jeroen Groot"), String::from("13:45")),
-                Team::new(
-                    5,
-                    String::from("Chiel van Baardwijk"),
-                    String::from("14:00"),
-                ),
-                Team::new(6, String::from("Noud van Bohemen"), String::from("14:15")),
-                Team::new(7, String::from("Lucas Boogaart"), String::from("15:00")),
-                Team::new(8, String::from("Sake de Vries"), String::from("15:15")),
-                Team::new(9, String::from("Tim Huysse"), String::from("15:30")),
-                Team::new(10, String::from("Lars de Nijs"), String::from("15:45")),
-                Team::new(11, String::from("Matt Molenaar"), String::from("16:00")),
-                Team::new(
-                    12,
-                    String::from("Sebastiaan van Paassen"),
-                    String::from("16:15"),
-                ),
-                Team::new(13, String::from("Ries Meijssen"), String::from("16:30")),
-                Team::new(14, String::from("Isabel Hille"), String::from("16:45")),
-                Team::new(15, String::from("Julia Ansems"), String::from("17:00")),
-            ],
+            input_mode: InputMode::Normal,
+            input: String::new(),
+            last_id: 0,
+            teams: vec![],
         }
     }
     pub fn next(&mut self) {
@@ -150,7 +137,11 @@ impl App {
     }
 
     fn create_new(&mut self) {
-        println!("creating new");
+        self.input = String::new();
+        self.input_mode = match self.input_mode {
+            InputMode::Normal => InputMode::Editing,
+            InputMode::Editing => InputMode::Normal,
+        }
     }
 
     fn on_tick(&mut self) {
@@ -246,14 +237,38 @@ fn run_app<B: Backend>(
 
         if crossterm::event::poll(timeout)? {
             if let Event::Key(key) = event::read()? {
-                match key.code {
-                    KeyCode::Char('q') => return Ok(()),
-                    KeyCode::Char('n') => app.create_new(),
-                    KeyCode::Char('c') => app.reset_current(),
-                    KeyCode::Enter => app.start_stop_current(),
-                    KeyCode::Down => app.next(),
-                    KeyCode::Up => app.previous(),
-                    _ => {}
+                match app.input_mode {
+                    InputMode::Normal => match key.code {
+                        KeyCode::Char('q') => return Ok(()),
+                        KeyCode::Char('n') => app.create_new(),
+                        KeyCode::Char('c') => app.reset_current(),
+                        KeyCode::Enter => app.start_stop_current(),
+                        KeyCode::Down => app.next(),
+                        KeyCode::Up => app.previous(),
+                        _ => {}
+                    },
+                    InputMode::Editing => match key.code {
+                        KeyCode::Enter => {
+                            app.teams.push(Team::new(
+                                app.last_id,
+                                app.input.clone(),
+                                "Dobberdag".to_string(),
+                            ));
+                            app.last_id += 1;
+                            app.input_mode = InputMode::Normal;
+                        }
+                        KeyCode::Char(c) => {
+                            app.input.push(c);
+                        }
+                        KeyCode::Backspace => {
+                            app.input.pop();
+                        }
+                        KeyCode::Esc => {
+                            app.input = String::new();
+                            app.input_mode = InputMode::Normal;
+                        }
+                        _ => {}
+                    },
                 }
             }
         }
@@ -273,17 +288,23 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
         .constraints([Constraint::Min(2), Constraint::Length(3)].as_ref())
         .split(size);
 
-    let help =
-        Paragraph::new("q: Exit | n: Nieuwe Deelnemer | Space: Start/Stop tijd | c: Reset Tijd")
-            .style(Style::default().fg(Color::LightCyan))
-            .alignment(Alignment::Center)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .style(Style::default().fg(Color::White))
-                    .title("Help")
-                    .border_type(BorderType::Plain),
-            );
+    let help_text = match app.input_mode {
+        InputMode::Normal => {
+            "q: Exit | n: Nieuwe Deelnemer | Space: Start/Stop tijd | c: Reset Tijd".to_string()
+        }
+        InputMode::Editing => format!("Huidig: {} | Enter: Maak aan | Esc: Annuleer", app.input),
+    };
+
+    let help = Paragraph::new(help_text)
+        .style(Style::default().fg(Color::LightCyan))
+        .alignment(Alignment::Center)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .style(Style::default().fg(Color::White))
+                .title("Help")
+                .border_type(BorderType::Plain),
+        );
     f.render_widget(help, chunks[1]);
 
     let selected_style = Style::default().add_modifier(Modifier::REVERSED);
