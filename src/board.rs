@@ -130,7 +130,8 @@ impl Row {
     }
 
     fn format_string(&self, input: String) -> String {
-        assert!(input.len() == self.length.into());
+        let length: usize = self.length.into();
+        assert!(input.len() == length);
 
         let mut cmd = String::with_capacity(18);
 

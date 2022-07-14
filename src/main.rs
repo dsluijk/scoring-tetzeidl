@@ -4,7 +4,8 @@ mod team;
 use std::{
     env,
     error::Error,
-    io,
+    fs::{read_to_string, File},
+    io::stdout,
     sync::Mutex,
     time::{Duration, Instant},
 };
@@ -46,15 +47,28 @@ impl App {
         let mut state = TableState::default();
         state.select(None);
 
+        let teams = if let Ok(data) = read_to_string(".scores.json") {
+            let teams: Vec<Team> = serde_json::from_str(&data).expect("Unable to parse");
+
+            teams
+        } else {
+            Vec::new()
+        };
+
+        let last_id: u32 = teams.len().try_into().unwrap();
+        if last_id > 0 {
+            state.select(Some(0));
+        }
+
         App {
             state,
             board,
+            teams,
+            last_id,
             active: 0,
             is_running: false,
             input_mode: InputMode::Normal,
             input: String::new(),
-            last_id: 0,
-            teams: vec![],
         }
     }
     pub fn next(&mut self) {
@@ -125,6 +139,8 @@ impl App {
             self.active = self.teams[id].id;
             self.is_running = true;
         }
+
+        self.save_state();
     }
 
     fn reset_current(&mut self) {
@@ -134,6 +150,7 @@ impl App {
         };
 
         self.teams[selected].reset_time();
+        self.save_state();
     }
 
     fn create_new(&mut self) {
@@ -142,6 +159,11 @@ impl App {
             InputMode::Normal => InputMode::Editing,
             InputMode::Editing => InputMode::Normal,
         }
+    }
+
+    fn save_state(&mut self) {
+        let file = File::create(".scores.json").unwrap();
+        serde_json::to_writer(file, &self.teams).unwrap();
     }
 
     fn on_tick(&mut self) {
@@ -195,7 +217,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // setup terminal
     enable_raw_mode()?;
-    let mut stdout = io::stdout();
+    let mut stdout = stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
@@ -225,7 +247,7 @@ fn run_app<B: Backend>(
     terminal: &mut Terminal<B>,
     mut app: App,
     tick_rate: Duration,
-) -> io::Result<()> {
+) -> std::io::Result<()> {
     let mut last_tick = Instant::now();
 
     loop {
@@ -256,6 +278,11 @@ fn run_app<B: Backend>(
                             ));
                             app.last_id += 1;
                             app.input_mode = InputMode::Normal;
+                            app.save_state();
+
+                            if app.state.selected().is_none() {
+                                app.state.select(Some(0));
+                            }
                         }
                         KeyCode::Char(c) => {
                             app.input.push(c);

@@ -3,13 +3,16 @@ use std::{
     time::{Duration, Instant},
 };
 
+use serde::{Deserialize, Serialize};
 use tui::widgets::Row;
 
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Team {
     pub id: u32,
     name: String,
     start_time: String,
     race_time: String,
+    #[serde(skip)]
     running_time: Option<Instant>,
 }
 
